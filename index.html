@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Program 1 - Kamera (Komunikasi Dua Arah)</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body, html { width: 100%; height: 100%; overflow: hidden; background-color: #000; }
+        #canvas-efek { position: fixed; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; }
+        #sumber-video-asli { display: none; }
+        .status-message {
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background-color: rgba(0, 0, 0, 0.7); color: white; padding: 20px;
+            border-radius: 10px; text-align: center; z-index: 5; font-family: Arial, sans-serif;
+        }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <video id="sumber-video-asli" autoplay playsinline muted></video>
+    <canvas id="canvas-efek"></canvas>
+    <div class="status-message" id="statusMessage">
+        <h2>Kamera Pengirim Efek</h2>
+        <p>Menginisialisasi...</p>
+    </div>
+
+    <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.20.2.js"></script>
+    <script>
+        const sumberVideoAsli = document.getElementById('sumber-video-asli');
+        const canvasEfek = document.getElementById('canvas-efek');
+        const ctx = canvasEfek.getContext('2d');
+        const statusMessage = document.getElementById('statusMessage');
+
+        const APP_ID = "bdc4d3eed2ba4f32bc2b81f9473fb816";
+        const TOKEN = null;
+        const CHANNEL = "cctv-channel-1";
+        const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+
+        let localAudioTrack = null; // Variabel untuk menyimpan track audio lokal
+
+        function updateStatus(message) {
+            console.log(message);
+            statusMessage.querySelector('p').innerText = message;
+        }
+
+        // --- FUNGSI BARU: Logika untuk menangani remote user (monitor) ---
+        async function handleRemoteUserEvents() {
+            client.on("user-published", async (user, mediaType) => {
+                await client.subscribe(user, mediaType);
+                if (mediaType === "audio") {
+                    updateStatus("Monitor sedang berbicara... Mikrofon kamera dimatikan.");
+                    localAudioTrack.setMuted(true); // Matikan mikrofon kamera
+                    user.audioTrack.play();
+                }
+            });
+
+            client.on("user-unpublished", (user, mediaType) => {
+                if (mediaType === "audio") {
+                    updateStatus("Monitor berhenti berbicara. Mikrofon kamera aktif.");
+                    localAudioTrack.setMuted(false); // Aktifkan kembali mikrofon kamera
+                }
+            });
+        }
+
+
+        async function startBroadcast() {
+            updateStatus("Langkah 1: Meminta izin kamera...");
+
+            try {
+                const originalStream = await navigator.mediaDevices.getUserMedia({
+                    audio: true,
+                    video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } }
+                });
+                updateStatus("Langkah 2: Izin diberikan. Memutar video sumber...");
+
+                sumberVideoAsli.srcObject = originalStream;
+                sumberVideoAsli.onloadeddata = () => {
+                    sumberVideoAsli.play().catch(e => handleError(e, "Gagal memutar video sumber."));
+                };
+                sumberVideoAsli.onplay = () => {
+                    updateStatus("Langkah 3: Video sumber berhasil diputar.");
+                    statusMessage.classList.add('hidden');
+                    drawCanvasLoop();
+                    connectToAgora(originalStream);
+                };
+
+            } catch (err) {
+                handleError(err, "Gagal mengakses kamera.");
+            }
+        }
+
+        function drawCanvasLoop() {
+            canvasEfek.width = sumberVideoAsli.videoWidth;
+            canvasEfek.height = sumberVideoAsli.videoHeight;
+            ctx.save();
+            ctx.filter = 'grayscale(100%)';
+            if (window.innerHeight > window.innerWidth) { // Portrait
+                ctx.translate(canvasEfek.width, canvasEfek.height);
+                ctx.scale(-1, -1);
+            } else { // Landscape
+                // Video normal, tidak di-mirror
+            }
+            ctx.drawImage(sumberVideoAsli, 0, 0, canvasEfek.width, canvasEfek.height);
+            ctx.restore();
+            requestAnimationFrame(drawCanvasLoop);
+        }
+
+        async function connectToAgora(originalStream) {
+            try {
+                updateStatus("Langkah 4: Membuat stream dari kanvas...");
+                const canvasStream = canvasEfek.captureStream(30);
+                const customVideoTrack = AgoraRTC.createCustomVideoTrack({ mediaStreamTrack: canvasStream.getVideoTracks()[0] });
+                
+                // Simpan track audio ke variabel global
+                localAudioTrack = AgoraRTC.createCustomAudioTrack({ mediaStreamTrack: originalStream.getAudioTracks()[0] });
+                
+                handleRemoteUserEvents(); // Mulai mendengarkan event dari monitor
+                
+                updateStatus("Langkah 5: Menyambung ke channel Agora...");
+                await client.join(APP_ID, CHANNEL, TOKEN, null);
+                await client.publish([localAudioTrack, customVideoTrack]);
+
+                console.log("Broadcast dengan efek dimulai.");
+            } catch(err) {
+                handleError(err, "Gagal menyambung ke Agora.");
+            }
+        }
+        
+        function handleError(err, context) {
+            console.error(context, err);
+            statusMessage.classList.remove('hidden');
+            updateStatus(`Error: ${context} - ${err.message}`);
+        }
+
+        window.addEventListener('load', startBroadcast);
+    </script>
+</body>
+</html>
